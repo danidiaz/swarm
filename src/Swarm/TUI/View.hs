@@ -55,17 +55,18 @@ import           Data.Text             (Text)
 import qualified Data.Text             as T
 import           Linear
 import           Text.Printf
-import           Text.Wrap
 
 import           Brick                 hiding (Direction)
 import           Brick.Focus
 import           Brick.Forms
-import           Brick.Widgets.Border  (hBorder, hBorderWithLabel)
+import           Brick.Widgets.Border  (hBorder, hBorderWithLabel,
+                                        joinableBorder)
 import           Brick.Widgets.Center  (center, hCenter)
 import           Brick.Widgets.Dialog
 import qualified Brick.Widgets.List    as BL
 import qualified Brick.Widgets.Table   as BT
 
+import           Data.Maybe            (fromMaybe)
 import           Swarm.Game.Display
 import           Swarm.Game.Entity     hiding (empty)
 import           Swarm.Game.Recipe
@@ -305,18 +306,32 @@ explainFocusedItem :: AppState -> Widget Name
 explainFocusedItem s = case mItem of
   Nothing                   -> txt " "
   Just (Separator _)        -> txt " "
-  Just (InventoryEntry _ e) -> vBox $
-    map (padBottom (Pad 1) . txtWrap) (e ^. entityDescription)
-    ++
+  Just (InventoryEntry _ e) ->
+    vBox (map (padBottom (Pad 1) . txtWrap) (e ^. entityDescription))
+    <=>
     explainRecipes e
   where
     mList = s ^? uiState . uiInventory . _Just . _2
     mItem = mList >>= BL.listSelectedElement >>= (Just . snd)
 
-    indent2 = defaultWrapSettings { fillStrategy = FillIndent 2 }
-
-    explainRecipes :: Entity -> [Widget Name]
-    explainRecipes = map (txtWrapWith indent2 . prettyRecipe) . recipesWith
+    explainRecipes :: Entity -> Widget Name
+    explainRecipes e
+      | null recipes = emptyWidget
+      | otherwise    = vBox
+        [ padBottom (Pad 1) (hBorderWithLabel (txt "Recipes"))
+        , padLeftRight 2 $
+          hCenter $
+          vBox $
+          map (hLimit widthLimit . padBottom (Pad 1) . drawRecipe e) recipes
+        ]
+      where
+        recipes = recipesWith e
+        width (n,ingr) = length (show n) + 1 + T.length (ingr ^. entityName)
+        maxInputWidth = fromMaybe 0 $
+          maximumOf (traverse . recipeInputs . traverse . to width) recipes
+        maxOutputWidth = fromMaybe 0 $
+          maximumOf (traverse . recipeOutputs . traverse . to width) recipes
+        widthLimit = 2 * max maxInputWidth maxOutputWidth + 10
 
     recipesWith :: Entity -> [Recipe Entity]
     recipesWith e = S.toList . S.fromList $
@@ -326,6 +341,34 @@ explainFocusedItem s = case mItem of
       -- because some recipes can have an item as both an input and an
       -- output (e.g. some recipes that require a furnace); those
       -- recipes would show up twice above.
+
+drawRecipe :: Entity -> Recipe Entity -> Widget Name
+drawRecipe e (Recipe ins outs) = hBox
+  [ vBox (zipWith drawIn [0..] ins)
+  , hLimit 4 hBorder
+  , vBox (zipWith drawOut [0..]  outs)
+  ]
+  where
+    inLen = length ins
+    outLen = length outs
+    drawIn, drawOut :: Int -> (Count, Entity) -> Widget Name
+    drawIn i (n, ingr) = hBox
+      [ padRight (Pad 1) $ str (show n)
+      , highlight (ingr ^. entityName)
+      , padLeft (Pad 1) $
+          hBorder <+>
+          joinableBorder (Edges (i /= 0) (i /= inLen-1) True False)
+      ]
+    drawOut i (n, ingr) = hBox
+      [ padRight (Pad 1) $
+          joinableBorder (Edges (i /= 0) (i /= outLen-1) False True) <+>
+          hBorder
+      , highlight (ingr ^. entityName)
+      , padLeft (Pad 1) $ str (show n)
+      ]
+    highlight nm
+      | nm == e ^. entityName = withAttr deviceAttr $ txt nm
+      | otherwise = txt nm
 
 -- | Draw a list of messages.
 drawMessages :: [Text] -> Widget Name
